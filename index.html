@@ -1,0 +1,1462 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>S E C U R E _ V A U L T</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700&family=Tajawal:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- KaTeX for Math Equations -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
+<!-- ══ FIX 5: CodeMirror 5 ══ -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/continuelist.min.js"></script>
+
+<!-- React & Dependencies -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Firebase Sync Setup -->
+<script type="module">
+import { initializeApp, getApp }       from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, deleteDoc, collection }
+                                        from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithCustomToken, signOut }
+                                        from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+const FB_LS_KEY  = 'vault_fb_config';
+
+/* Build the _fb API for a given auth user */
+function mountFb(db, uid) {
+    const docRef = doc(db, 'vault_notes', uid, 'data', 'main');
+    const imgCol = collection(db, 'vault_notes', uid, 'images');
+    window._fb = {
+        uid,
+        save:        async (n)        => setDoc(docRef, { notes: JSON.stringify(n), t: Date.now() }, { merge: true }),
+        load:        async ()         => getDoc(docRef),
+        saveImage:   async (id, data) => setDoc(doc(imgCol, id), { data, t: Date.now() }),
+        getImage:    async (id)       => { const s = await getDoc(doc(imgCol, id)); return s.exists() ? s.data().data : null; },
+        deleteImage: async (id)       => deleteDoc(doc(imgCol, id))
+    };
+    window._fbConnected = true;
+    window.dispatchEvent(new Event('fb-ready'));
+}
+
+/* Initialize app with a given config (idempotent) */
+function getOrInitApp(fbConfig) {
+    try { return initializeApp(fbConfig, 'vault-user'); }
+    catch { return getApp('vault-user'); }
+}
+
+/* Called from React: init Firebase then trigger Google sign-in popup */
+window.initFirebaseWithConfig = async function(fbConfig) {
+    try {
+        const app  = getOrInitApp(fbConfig);
+        const db   = getFirestore(app);
+        const auth = getAuth(app);
+
+        // Platform-injected token (e.g. Canvas)
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(auth, __initial_auth_token);
+            mountFb(db, auth.currentUser.uid);
+            return { ok: true, user: auth.currentUser };
+        }
+
+        // If already signed in with Google, reuse session
+        if (auth.currentUser && !auth.currentUser.isAnonymous) {
+            mountFb(db, auth.currentUser.uid);
+            return { ok: true, user: auth.currentUser };
+        }
+
+        // Google sign-in popup
+        const provider = new GoogleAuthProvider();
+        const result   = await signInWithPopup(auth, provider);
+        mountFb(db, result.user.uid);
+        return { ok: true, user: result.user };
+    } catch(e) {
+        console.warn('Firebase init error:', e);
+        return { ok: false, error: e.message };
+    }
+};
+
+/* Sign out and clear session */
+window.firebaseSignOut = async function() {
+    try {
+        const saved = localStorage.getItem(FB_LS_KEY);
+        if (saved) {
+            const app  = getOrInitApp(JSON.parse(saved));
+            const auth = getAuth(app);
+            await signOut(auth);
+        }
+    } catch {}
+    window._fb = null;
+    window._fbConnected = false;
+};
+
+// Auto-connect on load if config is saved
+async function autoConnect() {
+    if (typeof __firebase_config !== 'undefined') {
+        try {
+            const fbConfig = JSON.parse(__firebase_config);
+            const app  = getOrInitApp(fbConfig);
+            const db   = getFirestore(app);
+            const auth = getAuth(app);
+            // Listen for auth state — user stays signed in across sessions
+            auth.onAuthStateChanged(user => {
+                if (user && !user.isAnonymous) mountFb(db, user.uid);
+            });
+        } catch(e) { console.warn('Auto-connect failed', e); }
+        return;
+    }
+    const saved = localStorage.getItem(FB_LS_KEY);
+    if (saved) {
+        try {
+            const fbConfig = JSON.parse(saved);
+            const app  = getOrInitApp(fbConfig);
+            const db   = getFirestore(app);
+            const auth = getAuth(app);
+            // onAuthStateChanged fires immediately if session persists (IndexedDB)
+            auth.onAuthStateChanged(user => {
+                if (user && !user.isAnonymous) mountFb(db, user.uid);
+            });
+        } catch(e) { console.warn('Auto-connect failed', e); }
+    }
+}
+autoConnect();
+</script>
+
+<style>
+/* ── PREMIUM DARK RESET ── */
+*,*::before,*::after{box-sizing:border-box}
+body {
+    background: #09090b;
+    color: #e4e4e7;
+    font-family: 'Inter', 'Tajawal', sans-serif;
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+}
+.font-sans-body { font-family: 'Inter', 'Tajawal', sans-serif !important; }
+.font-heading { font-family: 'Outfit', 'Tajawal', sans-serif !important; }
+.font-mono-code { font-family: 'JetBrains Mono', monospace !important; }
+::selection { background: #10b981; color: #000000; }
+.vignette {
+    position: fixed; top: 0; left: 0; bottom: 0; right: 0;
+    background: radial-gradient(circle at 50% 40%, transparent 50%, rgba(0,0,0,0.4) 100%);
+    z-index: 998; pointer-events: none;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+/* ── MARKDOWN ── */
+.md-container { max-width: 75ch; margin: 0 auto; }
+.md { font-size: 1.15rem; line-height: 1.85; word-break: break-word; color: #d4d4d8; font-family: 'Inter', 'Tajawal', sans-serif; }
+.md h1 { font-family: 'Outfit', 'Tajawal', sans-serif; font-size: 2.5rem; color: #f4f4f5; font-weight: 700; margin: 1.2em 0 0.5em; line-height: 1.2; letter-spacing: -0.02em; }
+.md h2 { font-family: 'Outfit', 'Tajawal', sans-serif; font-size: 1.75rem; color: #e4e4e7; font-weight: 600; margin: 1.2em 0 0.4em; border-bottom: 1px solid #27272a; padding-bottom: 0.3em; }
+.md h3 { font-family: 'Outfit', 'Tajawal', sans-serif; font-size: 1.35rem; color: #e4e4e7; font-weight: 600; margin: 1em 0 0.3em; }
+.md p { margin-bottom: 1.2em; color: #a1a1aa; }
+.md a { color: #34d399; text-decoration: none; transition: color 0.2s; font-weight: 500; }
+.md a:hover { color: #10b981; text-decoration: underline; text-underline-offset: 4px; }
+.md ul, .md ol { padding-inline-start: 2em; margin-bottom: 1.2em; }
+.md li { margin-bottom: 0.5em; color: #a1a1aa; }
+.md ul { list-style-type: disc; }
+.md ol { list-style-type: decimal; }
+.md li::marker { color: #10b981; font-weight: bold; }
+.md blockquote {
+    border-inline-start: 4px solid #10b981;
+    padding-inline-start: 1.2em;
+    color: #a1a1aa;
+    background-color: rgba(16, 185, 129, 0.05);
+    margin: 1.5em 0;
+    padding: 1.2em;
+    border-radius: 8px;
+    font-style: italic;
+}
+.md code, .md pre { font-family: 'JetBrains Mono', monospace; font-size: 0.9em; direction: ltr !important; text-align: left !important; unicode-bidi: isolate !important; }
+.md code { background: #18181b; color: #34d399; padding: 0.2em 0.4em; border-radius: 4px; border: 1px solid #27272a; }
+.md pre { background: #111113; padding: 1.2em; border-radius: 12px; overflow-x: auto; margin-bottom: 1.5em; border: 1px solid #27272a; }
+.md pre code { background: transparent; padding: 0; color: #e4e4e7; border: none; }
+.md strong { color: #f4f4f5; font-weight: 600; }
+.md hr { border: none; border-top: 1px solid #27272a; margin: 2em 0; }
+.md table { width: 100%; border-collapse: collapse; margin-bottom: 1.5em; font-size: 0.95em; }
+.md th { background: #18181b; color: #e4e4e7; padding: 0.75em; border: 1px solid #27272a; font-family: 'Outfit', sans-serif; font-weight: 600; }
+.md td { padding: 0.75em; border: 1px solid #27272a; color: #a1a1aa; }
+.md img { max-width: 100%; border-radius: 12px; margin: 1em 0; }
+
+/* KaTeX */
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.5em 0; margin: 1em 0; direction: ltr !important; color: #34d399; unicode-bidi: isolate !important; text-align: left !important; }
+.katex { direction: ltr !important; unicode-bidi: isolate !important; font-size: 1.1em; color: #34d399; }
+
+/* UI Components */
+.smooth-card { background: #18181b; border: 1px solid #27272a; border-radius: 16px; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+.smooth-card:hover { border-color: #3f3f46; transform: translateY(-2px); box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); }
+.smooth-input { background: #18181b; border: 1px solid #27272a; color: #f4f4f5; outline: none; border-radius: 12px; transition: all 0.2s; }
+.smooth-input:focus { border-color: #10b981; box-shadow: 0 0 0 2px rgba(16,185,129,0.1); }
+.btn-ghost { background: transparent; color: #a1a1aa; transition: all 0.2s; border-radius: 8px; }
+.btn-ghost:hover { background: #27272a; color: #f4f4f5; }
+.btn-primary { background: #10b981; color: #022c22; font-weight: 600; transition: all 0.2s; border-radius: 8px; border: 1px solid transparent; }
+.btn-primary:hover { background: #34d399; transform: scale(1.02); }
+.spinner { border: 2px solid rgba(255,255,255,0.1); border-left-color: #10b981; border-radius: 50%; width: 16px; height: 16px; animation: spin 1s linear infinite; }
+@keyframes spin { 0%{transform:rotate(0deg)}100%{transform:rotate(360deg)} }
+@keyframes toast-in { from { opacity:0; transform:translateX(-50%) translateY(12px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
+.toast-animate { animation: toast-in 0.22s cubic-bezier(0.4,0,0.2,1) forwards; }
+
+/* ══ FIX 5: CodeMirror Dark Theme ══ */
+.CodeMirror {
+    background: transparent !important;
+    color: #d4d4d8;
+    font-family: 'Inter', 'Tajawal', sans-serif !important;
+    font-size: 16px;
+    line-height: 1.85;
+    height: 100%;
+    padding: 0;
+}
+.CodeMirror-scroll {
+    padding: 2rem;
+    box-sizing: content-box !important;
+    min-height: 100%;
+}
+.CodeMirror-sizer { min-height: 100% !important; }
+.CodeMirror-cursor { border-left: 2px solid #10b981 !important; }
+.CodeMirror-selected { background: rgba(16,185,129,0.15) !important; }
+.CodeMirror-focused .CodeMirror-selected { background: rgba(16,185,129,0.2) !important; }
+.CodeMirror-gutters { display: none !important; }
+.CodeMirror-lines { padding: 0 !important; }
+/* Syntax highlighting */
+.cm-header { font-family: 'Outfit','Tajawal',sans-serif !important; font-weight: 700; color: #f4f4f5; }
+.cm-header-1 { font-size: 1.5em; }
+.cm-header-2 { font-size: 1.25em; color: #e4e4e7; }
+.cm-header-3 { font-size: 1.1em; color: #d4d4d8; }
+.cm-strong { color: #f4f4f5; font-weight: 700; }
+.cm-em { color: #a1a1aa; font-style: italic; }
+.cm-link { color: #34d399; }
+.cm-url { color: #52525b; }
+.cm-quote { color: #a1a1aa; }
+.cm-hr { color: #3f3f46; }
+.cm-comment { color: #71717a; font-family: 'JetBrains Mono', monospace !important; font-size: 0.9em; }
+.cm-keyword { color: #34d399; }
+.cm-atom { color: #34d399; }
+.cm-editor-host { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.cm-editor-host .CodeMirror { flex: 1; }
+.cm-editor-host .CodeMirror-wrap { height: 100%; display: flex; flex-direction: column; }
+.cm-editor-host .CodeMirror-scroll { flex: 1; }
+</style>
+</head>
+<body>
+<div class="vignette"></div>
+<div id="root" class="relative z-10"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useReducer } = React;
+const LS = "nv_pro_1";
+
+
+
+/* ══════════════════════════════════════════════════
+   FIX 3: useReducer FOR NAVIGATION
+   One single source of truth, explicit transitions.
+   ══════════════════════════════════════════════════ */
+const NAV_INIT = { mode: 'list', activeId: null };
+const navReducer = (state, action) => {
+  switch (action.type) {
+    case 'LIST': return { mode: 'list', activeId: null };
+    case 'NEW':  return { mode: 'new',  activeId: null };
+    case 'VIEW': return { mode: 'view', activeId: action.id };
+    case 'EDIT': return { mode: 'edit', activeId: state.activeId };
+    default:     return state;
+  }
+};
+
+
+/* Images are stored as inline base64 — no resolution needed */
+const resolveFsRefs = async (text) => text;
+
+/* Compress image file → return base64 dataUrl directly (fully offline) */
+const processImageFile = (file) => new Promise((resolve, reject) => {
+  if (!file.type.startsWith('image/')) { reject('Please select a valid image file.'); return; }
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const MAX = 800;
+      let { width, height } = img;
+      if (width > height && width > MAX) { height = Math.round(height * MAX / width); width = MAX; }
+      else if (height > MAX)             { width  = Math.round(width  * MAX / height); height = MAX; }
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', 0.6));
+    };
+    img.onerror = () => reject('Invalid image file.');
+    img.src = event.target.result;
+  };
+  reader.onerror = () => reject('Failed to read file.');
+  reader.readAsDataURL(file);
+});
+
+/* ══════════════════════════════════════════════════
+   FIX 1: SYNC — TIMESTAMP-BASED MERGE
+   The note with the latest updatedAt wins, not the
+   longer one. Falls back to id (creation time) for
+   old notes that predate this fix.
+   ══════════════════════════════════════════════════ */
+function useSync(notes, setNotes) {
+  const [st, setSt]     = useState('loading');
+  const isReady         = useRef(false);
+  const lastSaved       = useRef(null);
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        if (!window._fb) { isReady.current = true; setSt('disconnected'); return; }
+        const snap       = await window._fb.load();
+        const localNotes = JSON.parse(localStorage.getItem(LS) || '[]');
+        if (snap.exists()) {
+          const remoteNotes = JSON.parse(snap.data().notes || '[]');
+          const mergedMap   = new Map();
+          remoteNotes.forEach(n => mergedMap.set(n.id, n));
+          localNotes.forEach(n => {
+            if (!mergedMap.has(n.id)) {
+              mergedMap.set(n.id, n);
+            } else {
+              const remote   = mergedMap.get(n.id);
+              const localTs  = n.updatedAt      || n.id;
+              const remoteTs = remote.updatedAt  || remote.id;
+              if (localTs > remoteTs) mergedMap.set(n.id, n); // ← THE FIX
+            }
+          });
+          const finalNotes = Array.from(mergedMap.values()).sort((a, b) => b.id - a.id);
+          setNotes(finalNotes);
+          localStorage.setItem(LS, JSON.stringify(finalNotes));
+          lastSaved.current = JSON.stringify(finalNotes);
+        } else {
+          lastSaved.current = JSON.stringify(localNotes);
+        }
+      } catch { setSt('err'); }
+      finally  { isReady.current = true; setSt('idle'); }
+    };
+    window._fb ? init() : (setSt('disconnected'), window.addEventListener('fb-ready', init, { once: true }));
+  }, []);
+
+  useEffect(() => {
+    if (!isReady.current) return;
+    const currentStr = JSON.stringify(notes);
+    if (currentStr === lastSaved.current) return;
+    localStorage.setItem(LS, currentStr);
+    const timer = setTimeout(async () => {
+      if (!window._fb) return;
+      setSt('saving');
+      try {
+        await window._fb.save(notes);
+        lastSaved.current = currentStr;
+        setSt('ok');
+        setTimeout(() => setSt('idle'), 2000);
+      } catch { setSt('err'); setTimeout(() => setSt('idle'), 3000); }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [notes]);
+
+  return st;
+}
+
+/* ── MARKDOWN VIEWER ── */
+const escapeHtml = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
+
+const MarkdownViewer = ({ content }) => {
+  const containerRef          = useRef(null);
+  const [display, setDisplay] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    resolveFsRefs(content || '').then(resolved => {
+      if (!cancelled) setDisplay(resolved);
+    });
+    return () => { cancelled = true; };
+  }, [content]);
+
+  const html = useMemo(() => {
+    if (!display) return { __html: '' };
+    let mathBlocks = [];
+    let temp = display.replace(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\(.*?\\\)|\$[^$\n]+\$)/g, (match) => {
+      mathBlocks.push(escapeHtml(match));
+      return `@@MATHBLOCK_${mathBlocks.length - 1}@@`;
+    });
+    let rawHtml = marked.parse(temp, { breaks: true });
+    mathBlocks.forEach((block, i) => {
+      rawHtml = rawHtml.replace(`@@MATHBLOCK_${i}@@`, block);
+    });
+    let cleanHtml = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['dir'], ALLOW_DATA_ATTR: true });
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(cleanHtml, 'text/html');
+    doc.querySelectorAll('p,h1,h2,h3,h4,h5,h6,blockquote,th,td').forEach(el => el.setAttribute('dir', 'auto'));
+    const rtlRx = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
+    const ltrRx = /[A-Za-z]/;
+    doc.querySelectorAll('ul,ol').forEach(list => {
+      const firstLi = Array.from(list.children).find(el => el.tagName === 'LI');
+      if (!firstLi) return;
+      const txt = firstLi.textContent.trim();
+      let isRTL = false;
+      for (let i = 0; i < txt.length; i++) {
+        if (rtlRx.test(txt[i])) { isRTL = true; break; }
+        if (ltrRx.test(txt[i])) { isRTL = false; break; }
+      }
+      const dir = isRTL ? 'rtl' : 'ltr';
+      list.setAttribute('dir', dir);
+      Array.from(list.children).forEach(li => { if (li.tagName === 'LI') li.setAttribute('dir', dir); });
+    });
+    return { __html: doc.body.innerHTML };
+  }, [display]);
+
+  useEffect(() => {
+    if (containerRef.current && window.renderMathInElement) {
+      renderMathInElement(containerRef.current, {
+        delimiters: [
+          {left:'$$',right:'$$',display:true},
+          {left:'\\[',right:'\\]',display:true},
+          {left:'$',right:'$',display:false},
+          {left:'\\(',right:'\\)',display:false}
+        ],
+        throwOnError: false
+      });
+    }
+  }, [html]);
+
+  return <div ref={containerRef} className="md flex-grow font-sans-body" dangerouslySetInnerHTML={html} />;
+};
+
+
+
+/* ══════════════════════════════════════════════════
+   FIX 5: FORMAT HELPER — works with CodeMirror API
+   ══════════════════════════════════════════════════ */
+const fmtCM = (cm, type, extra = '') => {
+  if (!cm) return;
+  cm.focus();
+  if (type === 'image_direct') {
+    cm.replaceRange(`\n![Image](${extra})\n`, cm.getCursor('end'));
+    return;
+  }
+  const F = {
+    bold:      { w: ['**','**'],            ph: 'Bold text'  },
+    italic:    { w: ['*','*'],              ph: 'Italic'     },
+    h1:        { p: '# ',                   ph: 'Heading 1'  },
+    h2:        { p: '## ',                  ph: 'Heading 2'  },
+    bullet:    { p: '- ',                   ph: 'List item'  },
+    quote:     { p: '> ',                   ph: 'Quote'      },
+    code:      { w: ['`','`'],              ph: 'code'       },
+    codeblock: { w: ['```\n','\n```'],      ph: 'code block' },
+    link:      { w: ['[','](url)'],         ph: 'Link text'  },
+    math:      { w: ['$','$'],              ph: 'equation'   },
+    mathblock: { w: ['\n\\[\n','\n\\]\n'], ph: 'E=mc^2'     }
+  };
+  const f = F[type]; if (!f) return;
+  const sel = cm.getSelection();
+  if (f.w) {
+    const [pre, post] = f.w;
+    const text = sel || f.ph;
+    cm.replaceSelection(pre + text + post, 'around');
+    if (!sel) {
+      const cur       = cm.getCursor();
+      const postLines = post.split('\n');
+      const phLines   = text.split('\n');
+      const toLine    = cur.line - (postLines.length - 1);
+      const fromLine  = toLine   - (phLines.length   - 1);
+      cm.setSelection(
+        { line: fromLine, ch: fromLine === toLine ? cur.ch - post.length - text.length : 0 },
+        { line: toLine,   ch: cur.ch - post.length }
+      );
+    }
+  } else {
+    const from  = cm.getCursor('start');
+    const to    = cm.getCursor('end');
+    const lines = [];
+    for (let i = from.line; i <= to.line; i++) lines.push(cm.getLine(i));
+    cm.replaceRange(
+      lines.map(l => f.p + l).join('\n'),
+      { line: from.line, ch: 0 },
+      { line: to.line,   ch: cm.getLine(to.line).length }
+    );
+  }
+};
+
+/* ── TOOLBAR (uses cmRef instead of textarea ref) ── */
+const TB = ({ cmRef }) => {
+  const [uploading, setUploading] = useState(false);
+  const [errorMsg,  setErrorMsg]  = useState('');
+  const fileInputRef = useRef(null);
+
+  const B = (label, type, title) => (
+    <button type="button" onClick={() => fmtCM(cmRef.current, type)} title={title}
+      className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-md transition-colors font-medium font-sans-body">
+      {label}
+    </button>
+  );
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploading(true); setErrorMsg('');
+    try {
+      const dataUrl = await processImageFile(file);
+      fmtCM(cmRef.current, 'image_direct', dataUrl);
+    } catch (err) {
+      const msg = typeof err === 'string' ? err : 'Failed to process image.';
+      setErrorMsg(msg);
+      setTimeout(() => setErrorMsg(''), 4000);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 px-4 py-2 border-b border-zinc-800 bg-zinc-900/50 backdrop-blur-sm sticky top-0 z-10">
+      {B('B','bold','Bold')} {B('I','italic','Italic')}
+      <span className="w-px h-4 bg-zinc-800 mx-1"/>
+      {B('H1','h1','Heading 1')} {B('H2','h2','Heading 2')}
+      <span className="w-px h-4 bg-zinc-800 mx-1"/>
+      {B('List','bullet','Bullet List')} {B('Quote','quote','Blockquote')}
+      <span className="w-px h-4 bg-zinc-800 mx-1"/>
+      {B('</>','code','Inline Code')} {B('Block','codeblock','Code Block')}
+      <span className="w-px h-4 bg-zinc-800 mx-1"/>
+      {B('∑','math','Inline Math')} {B('∫','mathblock','Math Block')}
+      <span className="w-px h-4 bg-zinc-800 mx-1"/>
+      {B('Link','link','Insert Link')}
+      <div className="relative flex items-center">
+        <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
+        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading} title="Upload Image (saved to cloud)"
+          className={`px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-md transition-colors font-medium flex items-center gap-1.5 ${uploading ? 'opacity-50 cursor-not-allowed' : ''}`}>
+          {uploading ? <div className="spinner"></div> : (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          )}
+          {uploading ? 'Uploading...' : 'Image'}
+        </button>
+        {errorMsg && (
+          <span className="text-red-400 text-xs ml-2 absolute left-full whitespace-nowrap bg-zinc-900 px-2 py-1 rounded border border-red-500/20 z-20">{errorMsg}</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/* ══════════════════════════════════════════════════
+   FIX 5: CMEditor — CodeMirror wrapper component
+   - Syntax highlighting for Markdown
+   - Smart list continuation (Enter key)
+   - Ctrl/Cmd+S to save
+   - Drag & drop handled at CM level
+   ══════════════════════════════════════════════════ */
+const CMEditor = ({ initialValue, onChange, cmRef, onSaveRef, onDrop }) => {
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current || cmRef.current) return;
+
+    const cm = CodeMirror(containerRef.current, {
+      value:        initialValue || '',
+      mode:         'markdown',
+      lineNumbers:  false,
+      lineWrapping: true,
+      autofocus:    true,
+      indentWithTabs: false,
+      tabSize:      2,
+      extraKeys: {
+        'Enter':      'newlineAndIndentContinueMarkdownList',
+        'Ctrl-S':     () => onSaveRef.current?.(),
+        'Cmd-S':      () => onSaveRef.current?.(),
+        'Ctrl-Enter': () => onSaveRef.current?.(),
+        'Cmd-Enter':  () => onSaveRef.current?.(),
+      }
+    });
+
+    cmRef.current = cm;
+    cm.on('change', instance => onChange(instance.getValue()));
+    cm.on('drop',   (instance, e) => { e.preventDefault(); e.stopPropagation(); onDrop && onDrop(e); });
+
+    return () => {
+      if (cmRef.current) {
+        try { cmRef.current.getWrapperElement().remove(); } catch {}
+        cmRef.current = null;
+      }
+    };
+  }, []);
+
+  return <div ref={containerRef} className="cm-editor-host" />;
+};
+
+/* ── EDITOR COMPONENT (uses CMEditor) ── */
+const Editor = ({ initialTitle = '', initialText = '', onSave, onCancel, clearDrag }) => {
+  const [mode,      setMode]      = useState('write');
+  const [title,     setTitle]     = useState(initialTitle);
+  const [text,      setText]      = useState(initialText);
+  const cmRef    = useRef(null);
+  const onSaveRef = useRef(null);
+
+  // Keep onSaveRef always fresh (avoids stale closure in CM extraKeys)
+  useEffect(() => {
+    onSaveRef.current = () => onSave(title, text);
+  }, [title, text, onSave]);
+
+  useEffect(() => {
+    if (!initialTitle) setTimeout(() => document.getElementById('note-title-input')?.focus(), 50);
+  }, []);
+
+  const handleSave = () => onSave(title, text);
+
+  const handleEditorDrop = async (e) => {
+    if (clearDrag) clearDrag();
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (file.type.startsWith('image/')) {
+      try {
+        const dataUrl = await processImageFile(file);
+        fmtCM(cmRef.current, 'image_direct', dataUrl);
+      } catch (err) {
+        console.warn('Image drop failed:', err);
+      }
+    } else if (file.name.endsWith('.md') || file.name.endsWith('.txt')) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        if (cmRef.current) cmRef.current.replaceRange('\n' + ev.target.result + '\n', cmRef.current.getCursor('end'));
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const Tab = (m, txt) => (
+    <button type="button" onClick={() => setMode(m)}
+      className={`px-4 py-3 text-sm font-medium transition-colors border-b-2 font-sans-body ${mode === m ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}>
+      {txt}
+    </button>
+  );
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden max-w-4xl mx-auto flex flex-col h-[85vh]">
+      <div className="p-4 bg-zinc-900/80 border-b border-zinc-800 flex items-center justify-between">
+        <input id="note-title-input" dir="auto" value={title} onChange={e => setTitle(e.target.value)}
+          placeholder="Untitled Document..."
+          className="w-full bg-transparent text-2xl text-zinc-100 outline-none placeholder-zinc-600 px-2 font-heading font-semibold" />
+        <div className="flex items-center gap-3 px-3 shrink-0">
+          <span className="text-[12px] text-zinc-500 font-mono-code" dir="ltr">{text.length} chars</span>
+        </div>
+      </div>
+
+      <div className="flex items-center px-2 bg-zinc-950/30 border-b border-zinc-800 shrink-0">
+        <div className="flex gap-2 px-2">{Tab('write','Write')}{Tab('preview','Preview')}</div>
+      </div>
+
+      {mode === 'write' && <TB cmRef={cmRef} />}
+
+      <div className="relative flex-grow bg-zinc-950/20 overflow-hidden flex flex-col">
+        {/* CMEditor stays always mounted; hidden via CSS in preview mode */}
+        <div className={mode === 'write' ? 'flex-grow overflow-hidden flex flex-col' : 'hidden'}>
+          <CMEditor
+            initialValue={initialText}
+            onChange={setText}
+            cmRef={cmRef}
+            onSaveRef={onSaveRef}
+            onDrop={handleEditorDrop}
+          />
+        </div>
+        {mode === 'preview' && (
+          <div className="p-8 overflow-y-auto flex-grow">
+            <div className="md-container">
+              {text.trim()
+                ? <MarkdownViewer content={text} />
+                : <div className="flex flex-col items-center justify-center h-full text-zinc-600 py-20 font-sans-body">Nothing to preview yet.</div>
+              }
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-end gap-3 p-4 bg-zinc-900 border-t border-zinc-800 shrink-0">
+        <button onClick={onCancel} className="px-5 py-2.5 text-sm font-sans-body btn-ghost">Cancel</button>
+        <button onClick={handleSave} className="px-6 py-2.5 text-sm font-sans-body btn-primary">Save Document</button>
+      </div>
+    </div>
+  );
+};
+
+/* ── VIEW MODE ── */
+const ViewMode = ({ note, onEdit, onClose, onDelete }) => {
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const handleOpenReader = () => {
+    const mdContainer = document.querySelector('.md-container');
+    if (!mdContainer) return;
+    const contentHTML = mdContainer.innerHTML;
+    const newTab = window.open('', '_blank');
+    if (!newTab) { alert('يرجى السماح بالنوافذ المنبثقة لفتح وضع القراءة.'); return; }
+    const htmlTemplate = `<!DOCTYPE html><html lang="ar" dir="auto"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${note.title || 'Reader Mode'}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700;800&family=Tajawal:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>
+:root{--bg:#fcfcfc;--text:#1a1a1a;--muted:#6b7280;--accent:#059669;--border:#e5e7eb;--code:#f3f4f6;}
+@media(prefers-color-scheme:dark){:root{--bg:#09090b;--text:#e4e4e7;--muted:#a1a1aa;--accent:#10b981;--border:#27272a;--code:#18181b;}}
+body{background:var(--bg);color:var(--text);font-family:'Inter','Tajawal',sans-serif;line-height:1.85;font-size:19px;margin:0;padding:0;}
+.progress-container{width:100%;height:4px;position:fixed;top:0;left:0;z-index:100;}
+.progress-bar{height:4px;background:var(--accent);width:0%;border-radius:0 2px 2px 0;}
+.reader-container{max-width:760px;margin:0 auto;padding:10vh 24px 15vh;opacity:0;animation:fadeIn .8s ease-out forwards;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+header{margin-bottom:60px;text-align:center;}
+h1.title{font-family:'Outfit','Tajawal',sans-serif;font-size:3.5rem;font-weight:800;line-height:1.2;margin:0 0 24px;color:var(--text);letter-spacing:-0.02em;}
+.meta{font-family:'JetBrains Mono',monospace;font-size:.95rem;color:var(--muted);display:flex;justify-content:center;align-items:center;gap:10px;padding-top:20px;border-top:1px solid var(--border);max-width:200px;margin:0 auto;}
+.content h1,.content h2,.content h3,.content h4{font-family:'Outfit','Tajawal',sans-serif;color:var(--text);font-weight:700;margin-top:2.5em;margin-bottom:.7em;}
+.content h2{font-size:2.2rem;border-bottom:1px solid var(--border);padding-bottom:.3em;}
+.content h3{font-size:1.6rem;}
+.content p{margin-bottom:1.5em;}
+.content a{color:var(--accent);text-decoration:none;font-weight:500;}
+.content ul,.content ol{padding-inline-start:2em;margin-bottom:1.5em;}
+.content li{margin-bottom:.6em;}
+.content li::marker{color:var(--accent);font-weight:bold;}
+.content blockquote{border-inline-start:4px solid var(--accent);padding:18px 24px;margin:2.5em 0;background:var(--code);border-radius:8px;font-style:italic;}
+.content pre{background:var(--code);padding:24px;border-radius:16px;overflow-x:auto;font-size:.9em;border:1px solid var(--border);direction:ltr!important;}
+.content code{background:var(--code);padding:4px 8px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:.85em;color:var(--accent);}
+.content img{max-width:100%;height:auto;border-radius:16px;margin:3em auto;display:block;}
+.content table{width:100%;border-collapse:collapse;margin:2.5em 0;}
+.content th,.content td{padding:14px 20px;border:1px solid var(--border);}
+.content th{background:var(--code);font-weight:600;}
+.content hr{border:none;border-top:1px solid var(--border);margin:4em auto;width:50%;}
+.katex-display{margin:2em 0;direction:ltr!important;}
+.katex{direction:ltr!important;font-size:1.15em;color:var(--accent);}
+@media(max-width:768px){.reader-container{padding:6vh 20px 10vh;}h1.title{font-size:2.5rem;}}
+</style></head><body>
+<div class="progress-container"><div class="progress-bar" id="rp"></div></div>
+<div class="reader-container">
+  <header><h1 class="title" dir="auto">${note.title||'Untitled'}</h1>
+  <div class="meta"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>${note.date}</div></header>
+  <article class="content" dir="auto">${contentHTML}</article>
+</div>
+<script>window.onscroll=function(){var s=document.body.scrollTop||document.documentElement.scrollTop,h=document.documentElement.scrollHeight-document.documentElement.clientHeight;document.getElementById('rp').style.width=(s/h*100)+'%'};<\/script>
+</body></html>`;
+    newTab.document.open();
+    newTab.document.write(htmlTemplate);
+    newTab.document.close();
+  };
+
+  const handleExportMD = async () => {
+    const resolved = await resolveFsRefs(note.text || '');
+    const blob = new Blob([resolved], { type: 'text/markdown;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `${note.title||'Document'}.md`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto mb-16">
+      <div className="flex items-center gap-2 mb-6">
+        <button onClick={onClose} className="text-sm font-medium text-zinc-400 hover:text-zinc-100 transition-colors flex items-center gap-1 font-sans-body bg-zinc-900 px-3 py-1.5 rounded-full border border-zinc-800">
+          ← Back to vault
+        </button>
+      </div>
+      <div className="bg-[#121214] border border-zinc-800 rounded-3xl shadow-2xl overflow-hidden relative">
+        <div className="flex flex-wrap items-start justify-between gap-6 p-8 md:p-12 border-b border-zinc-800/50">
+          <div className="flex-1 min-w-0">
+            <h1 dir="auto" className="text-3xl md:text-5xl text-zinc-100 break-words font-heading font-bold leading-tight">{note.title||'Untitled Document'}</h1>
+            <p className="text-sm text-zinc-500 font-mono-code mt-4 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500/50"></span>
+              {note.date}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0 bg-zinc-900/50 p-1.5 rounded-xl border border-zinc-800/50">
+            <button onClick={handleExportMD} className="px-3 py-2 text-sm text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors rounded-lg flex items-center gap-1.5" title="Export as Markdown">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              .MD
+            </button>
+            <button onClick={handleOpenReader} className="px-3 py-2 text-sm text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 transition-colors rounded-lg flex items-center gap-1.5" title="Open in Reader Mode">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+              Read
+            </button>
+            <div className="w-px h-6 bg-zinc-700 mx-1"></div>
+            <button onClick={onEdit} className="px-4 py-2 text-sm btn-ghost">Edit</button>
+            {showConfirm ? (
+              <div className="flex items-center gap-1 bg-red-500/10 p-1 rounded-lg border border-red-500/20">
+                <span className="text-xs text-red-400 px-2">Sure?</span>
+                <button onClick={onDelete} className="px-3 py-1 text-sm text-white bg-red-500 hover:bg-red-600 transition-colors rounded-md">Yes</button>
+                <button onClick={() => setShowConfirm(false)} className="px-3 py-1 text-sm text-zinc-300 hover:text-white bg-zinc-800 transition-colors rounded-md">No</button>
+              </div>
+            ) : (
+              <button onClick={() => setShowConfirm(true)} className="px-4 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-400/10 transition-colors rounded-lg">Delete</button>
+            )}
+          </div>
+        </div>
+        <div className="p-8 md:p-12 min-h-[50vh] bg-[#0c0c0e]">
+          <div className="md-container">
+            {note.text ? <MarkdownViewer content={note.text} /> : <p className="text-zinc-600 italic">Empty document.</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ── FIREBASE CONFIG MODAL ── */
+const FB_LS_KEY = 'vault_fb_config';
+
+const GoogleIcon = ({ size = 20 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24">
+    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+  </svg>
+);
+
+const FirebaseModal = ({ onClose, onConnected }) => {
+  const [step,    setStep]    = useState('signin'); // signin | config | ok
+  const [raw,     setRaw]     = useState('');
+  const [status,  setStatus]  = useState('idle');
+  const [errMsg,  setErrMsg]  = useState('');
+  const [showDel, setShowDel] = useState(false);
+  const [showCfg, setShowCfg] = useState(false);
+
+  const isSignedIn = !!window._fb?.uid;
+  const hasSaved   = !!localStorage.getItem(FB_LS_KEY);
+
+  React.useEffect(() => {
+    if (isSignedIn) setStep('ok');
+  }, []);
+
+  const parseConfig = (raw) => {
+    let jsonStr = raw.trim();
+    const m = jsonStr.match(/initializeApp\s*\(\s*(\{[\s\S]*?\})\s*\)/);
+    if (m) jsonStr = m[1];
+    jsonStr = jsonStr.replace(/([{,]\s*)([a-zA-Z_]\w*)\s*:/g, '$1"$2":');
+    jsonStr = jsonStr.replace(/'/g, '"');
+    return JSON.parse(jsonStr);
+  };
+
+  const handleSaveConfig = () => {
+    try {
+      const cfg = parseConfig(raw);
+      localStorage.setItem(FB_LS_KEY, JSON.stringify(cfg));
+      setShowCfg(false);
+      setErrMsg('');
+    } catch {
+      setErrMsg('Invalid config — check the format and try again.');
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setStatus('loading'); setErrMsg('');
+    try {
+      const saved = localStorage.getItem(FB_LS_KEY);
+      if (!saved) { setShowCfg(true); setStatus('idle'); return; }
+      const res = await window.initFirebaseWithConfig(JSON.parse(saved));
+      if (res.ok) {
+        setStatus('ok');
+        setStep('ok');
+        onConnected();
+      } else {
+        setStatus('err');
+        setErrMsg(res.error || 'Sign-in failed — try again.');
+      }
+    } catch(e) {
+      setStatus('err');
+      setErrMsg(e.message || 'Sign-in failed.');
+    }
+  };
+
+  const handleSignOut = async () => {
+    await window.firebaseSignOut();
+    localStorage.removeItem(FB_LS_KEY);
+    setStep('signin'); setStatus('idle'); setShowDel(false);
+    onConnected();
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-zinc-950 border border-zinc-800 rounded-3xl shadow-2xl w-full max-w-sm font-sans-body overflow-hidden">
+
+        {/* Close button */}
+        <div className="flex justify-end p-4 pb-0">
+          <button onClick={onClose} className="p-1.5 text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 rounded-lg transition-colors">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* ── STEP: Sign In ── */}
+        {step === 'signin' && (
+          <div className="px-8 pb-8 pt-2 flex flex-col items-center gap-6 text-center">
+            {/* Logo area */}
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-xl">
+                <svg className="w-8 h-8 text-orange-400" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M3.89 15.67L6.6 3.5l4.3 8.37-7.01 3.8zm9.12-4.97L10.48 3.5l7.63 10.43-5.1-2.23zM3.5 17l.39-.21 16.22-8.76L12 21l-8.5-4z"/>
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-100 font-heading">Sync your notes</h2>
+                <p className="text-zinc-500 text-sm mt-1 leading-relaxed">
+                  Access your vault from any device using your Google account.
+                </p>
+              </div>
+            </div>
+
+            {/* Error */}
+            {errMsg && (
+              <div className="w-full flex items-start gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 text-xs text-red-400 text-left">
+                <svg className="w-3.5 h-3.5 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                {errMsg}
+              </div>
+            )}
+
+            {/* Sign In Button */}
+            <button onClick={handleGoogleSignIn} disabled={status === 'loading'}
+              className="w-full flex items-center justify-center gap-3 px-5 py-3.5 bg-white text-zinc-900 font-semibold rounded-2xl hover:bg-zinc-100 active:scale-[0.98] transition-all text-sm shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
+              {status === 'loading'
+                ? <><div className="spinner" style={{borderLeftColor:'#333', width:'18px', height:'18px'}}/> Signing in...</>
+                : <><GoogleIcon size={20}/> Sign in with Google</>
+              }
+            </button>
+
+            {/* Config toggle */}
+            <div className="w-full">
+              <button onClick={() => { setShowCfg(v => !v); setErrMsg(''); }}
+                className="w-full text-xs text-zinc-600 hover:text-zinc-400 transition-colors flex items-center justify-center gap-1.5 py-1">
+                <svg className={`w-3 h-3 transition-transform ${showCfg ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/>
+                </svg>
+                {hasSaved ? 'Update Firebase config' : 'Set up Firebase config'}
+              </button>
+
+              {showCfg && (
+                <div className="mt-3 space-y-3 text-left">
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-500 space-y-1 leading-relaxed">
+                    <p className="text-zinc-400 font-medium">Quick setup:</p>
+                    <p>1. <span className="text-orange-400 font-mono">console.firebase.google.com</span></p>
+                    <p>2. Firestore → Create (Test mode)</p>
+                    <p>3. Auth → Google sign-in → Enable</p>
+                    <p>4. Project Settings → Web app → Copy config</p>
+                  </div>
+                  <textarea
+                    value={raw}
+                    onChange={e => { setRaw(e.target.value); setErrMsg(''); }}
+                    placeholder={'{\n  "apiKey": "AIza...",\n  "authDomain": "...",\n  "projectId": "..."\n}'}
+                    rows={5}
+                    className="w-full smooth-input px-3 py-2.5 text-xs font-mono-code resize-none leading-relaxed placeholder-zinc-700"
+                    spellCheck={false}
+                  />
+                  <button onClick={handleSaveConfig} disabled={!raw.trim()}
+                    className="w-full px-4 py-2 text-sm btn-primary rounded-xl disabled:opacity-50 disabled:cursor-not-allowed">
+                    Save Config
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── STEP: Connected ── */}
+        {step === 'ok' && (
+          <div className="px-8 pb-8 pt-2 flex flex-col items-center gap-5 text-center">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                <svg className="w-8 h-8 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7"/>
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-100 font-heading">You're synced</h2>
+                <p className="text-zinc-500 text-xs mt-1">
+                  {window._fb?.uid ? `${window._fb.uid.slice(0,20)}…` : 'Connected to Firebase'}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-zinc-500 text-xs max-w-xs leading-relaxed">
+              Your notes sync automatically. Sign in with the same Google account on any device.
+            </p>
+
+            <button onClick={onClose} className="w-full px-4 py-3 text-sm btn-primary rounded-2xl">
+              Done
+            </button>
+
+            {!showDel
+              ? <button onClick={() => setShowDel(true)} className="text-xs text-zinc-600 hover:text-red-400 transition-colors py-0.5">
+                  Sign out & disconnect
+                </button>
+              : <div className="flex items-center justify-center gap-2 w-full">
+                  <span className="text-xs text-zinc-400">Remove account & config?</span>
+                  <button onClick={handleSignOut} className="text-xs text-white bg-red-500 hover:bg-red-600 px-3 py-1.5 rounded-lg">Yes</button>
+                  <button onClick={() => setShowDel(false)} className="text-xs text-zinc-400 hover:text-zinc-200 px-3 py-1.5 rounded-lg bg-zinc-800">No</button>
+                </div>
+            }
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+};
+
+/* ── SYNC DOT (now a button) ── */
+const Dot = ({ st, onClick }) => {
+  const conf = {
+    loading:       { c:'text-blue-400  bg-blue-400/20',    dot:'bg-blue-400',    l:'Syncing...'        },
+    idle:          { c:'text-emerald-400 bg-emerald-400/20', dot:'bg-emerald-400', l:'All changes saved' },
+    saving:        { c:'text-amber-400  bg-amber-400/20',   dot:'bg-amber-400',   l:'Saving...'         },
+    ok:            { c:'text-emerald-400 bg-emerald-400/20', dot:'bg-emerald-400', l:'Saved'             },
+    err:           { c:'text-red-400    bg-red-400/20',     dot:'bg-red-400',     l:'Offline'           },
+    disconnected:  { c:'text-zinc-400   bg-zinc-800',       dot:'bg-zinc-600',    l:'No sync'           },
+  };
+  const cur = conf[st] || conf.disconnected;
+  return (
+    <button onClick={onClick}
+      title="Configure Firebase Sync"
+      className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800/50 hover:border-zinc-600 transition-colors group">
+      <span className={`w-2 h-2 rounded-full ${cur.dot} ${st !== 'disconnected' ? 'animate-pulse' : ''}`}></span>
+      <span className="text-[11px] text-zinc-400 group-hover:text-zinc-200 font-sans-body font-medium transition-colors">{cur.l}</span>
+      <svg className="w-3 h-3 text-zinc-600 group-hover:text-zinc-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+      </svg>
+    </button>
+  );
+};
+
+/* ══════════════════════════════════════════════════
+   FIX 4: NoteCard — memoized
+   Only re-renders when the note's own data changes.
+   ══════════════════════════════════════════════════ */
+const NoteCard = React.memo(({ note, onOpen, onPin, getDisplayTitle, getPreviewText }) => (
+  <div
+    onClick={() => onOpen(note.id)}
+    className={`group cursor-pointer p-5 md:p-6 flex flex-col min-h-[180px] smooth-card ${note.pinned ? 'bg-zinc-800/40 border-zinc-700/50' : 'bg-[#18181b]'}`}
+  >
+    <div className="flex-1 min-w-0">
+      <div className="flex items-start justify-between mb-3 gap-2">
+        <h3 dir="auto" className="text-[17px] font-heading font-semibold text-zinc-100 leading-snug break-words line-clamp-2 group-hover:text-emerald-400 transition-colors">
+          {getDisplayTitle(note)}
+        </h3>
+        <button
+          onClick={e => onPin(e, note.id)}
+          title={note.pinned ? 'Unpin' : 'Pin'}
+          className={`shrink-0 p-1 rounded-md transition-all ${note.pinned ? 'text-amber-400' : 'text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 opacity-0 group-hover:opacity-100'}`}
+        >
+          <svg className="w-4 h-4" fill={note.pinned ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+          </svg>
+        </button>
+      </div>
+      <p dir="auto" className="text-sm text-zinc-400 line-clamp-3 font-sans-body leading-relaxed mb-4">
+        {getPreviewText(note) || <span className="italic opacity-50">Empty...</span>}
+      </p>
+    </div>
+    <div className="mt-auto pt-4 border-t border-zinc-800/60 flex items-center justify-between">
+      <span className="text-[11px] text-zinc-500 font-mono-code">{note.date.split(',')[0]}</span>
+      <span className="text-[11px] font-medium text-zinc-600 group-hover:text-emerald-500 transition-colors flex items-center gap-1">
+        Read <span className="text-lg leading-none transition-transform group-hover:translate-x-1">→</span>
+      </span>
+    </div>
+  </div>
+),
+/* Custom comparison: only re-render on real data changes */
+(prev, next) =>
+  prev.note.id     === next.note.id     &&
+  prev.note.title  === next.note.title  &&
+  prev.note.text   === next.note.text   &&
+  prev.note.pinned === next.note.pinned
+);
+
+/* ══════════════════════════════════════════════════
+   MAIN APP — uses useReducer + NoteCard
+   ══════════════════════════════════════════════════ */
+const App = () => {
+  const [notes, setNotes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(LS) || '[]'); } catch { return []; }
+  });
+  const [search,  setSearch]  = useState('');
+  const [filter,  setFilter]  = useState('all');
+  const [nav,     dispatch]   = useReducer(navReducer, NAV_INIT);  // ← FIX 3
+  const [isDragging, setIsDragging] = useState(false);
+  const fileImportRef   = useRef(null);
+  const backupImportRef = useRef(null);
+  const [toast, setToast] = useState('');
+  const [showFbModal, setShowFbModal] = useState(false);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3200); };
+
+  const syncSt     = useSync(notes, setNotes);
+  const activeNote = notes.find(n => n.id === nav.activeId);
+
+  const getDisplayTitle = (n) => {
+    if (n.title) return n.title;
+    const first = (n.text || '').split('\n')[0].replace(/^[#>*\-\s]+/, '').trim();
+    return first ? first.substring(0, 40) + (first.length > 40 ? '…' : '') : 'Untitled Document';
+  };
+
+  const getPreviewText = (n) =>
+    (n.text || '')
+      .replace(/^[#>*\-\s]+/gm, '')
+      .trim()
+      .substring(0, 120);
+
+  const makeDate = () => new Date().toLocaleString('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+
+  /* FIX 1: every save stamps updatedAt */
+  const handleSaveNew = (title, text) => {
+    if (!text.trim() && !title.trim()) return;
+    const now = Date.now();
+    setNotes(p => [{
+      id: now, updatedAt: now,
+      date: makeDate(),
+      title: title.trim() || 'Untitled Document',
+      text: text.trim(),
+      pinned: false
+    }, ...p]);
+    dispatch({ type: 'LIST' });
+  };
+
+  const handleSaveEdit = (title, text) => {
+    if (!text.trim() && !title.trim()) return;
+    const now = Date.now();
+    setNotes(p => p.map(n => n.id === nav.activeId
+      ? { ...n, updatedAt: now, title: title.trim() || 'Untitled Document', text: text.trim() }
+      : n
+    ));
+    dispatch({ type: 'VIEW', id: nav.activeId });
+  };
+
+  const handleImportFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => handleSaveNew(file.name.replace(/\.[^/.]+$/, ''), ev.target.result);
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  /* ── BACKUP: export all notes as .json (images are inline base64 inside note text) ── */
+  const handleBackup = () => {
+    try {
+      const backup = {
+        version: 4,
+        exportedAt: new Date().toISOString(),
+        notesCount: notes.length,
+        notes: [...notes]
+      };
+      const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `vault_backup_${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast(`✓ Backup saved — ${notes.length} note${notes.length !== 1 ? 's' : ''}`);
+    } catch {
+      showToast('✗ Backup failed — please try again');
+    }
+  };
+
+  /* ── RESTORE: import from .json backup ── */
+  const handleRestoreBackup = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const backup = JSON.parse(ev.target.result);
+        if (!backup.notes || !Array.isArray(backup.notes)) {
+          showToast('✗ Invalid backup file'); return;
+        }
+        if (!window.confirm(
+          `Restore ${backup.notes.length} note${backup.notes.length !== 1 ? 's' : ''} from backup?\n\nExported: ${backup.exportedAt ? new Date(backup.exportedAt).toLocaleString() : 'Unknown'}\n\nYour current notes will be kept. Conflicts are resolved by the newest edit.`
+        )) return;
+
+        /* merge notes — newest updatedAt wins */
+        setNotes(prev => {
+          const merged = new Map();
+          prev.forEach(n => merged.set(n.id, n));
+          backup.notes.forEach(n => {
+            if (!merged.has(n.id)) {
+              merged.set(n.id, n);
+            } else {
+              const ex  = merged.get(n.id);
+              const exTs = ex.updatedAt  || ex.id;
+              const bkTs = n.updatedAt   || n.id;
+              if (bkTs > exTs) merged.set(n.id, n);
+            }
+          });
+          const result = Array.from(merged.values()).sort((a, b) => b.id - a.id);
+          localStorage.setItem(LS, JSON.stringify(result));
+          return result;
+        });
+        showToast(`✓ ${backup.notes.length} note${backup.notes.length !== 1 ? 's' : ''} restored`);
+        dispatch({ type: 'LIST' });
+      } catch {
+        showToast('✗ Could not read backup — file may be corrupted');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  /* delete note */
+  const handleDelete = (id) => {
+    if (!window.confirm('Delete this document permanently?')) return;
+    setNotes(p => p.filter(n => n.id !== id));
+    dispatch({ type: 'LIST' });
+  };
+
+  const togglePin = (e, id) => {
+    e.stopPropagation();
+    setNotes(p => p.map(n => n.id === id ? { ...n, pinned: !n.pinned } : n));
+  };
+
+  const handleGlobalDragOver = (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) setIsDragging(true);
+  };
+  const handleGlobalDragLeave = (e) => {
+    e.preventDefault();
+    if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false);
+  };
+  const handleGlobalDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.target.closest('.cm-editor-host')) return;
+    const files = Array.from(e.dataTransfer.files);
+    let imported = 0;
+    files.forEach(file => {
+      if (file.name.endsWith('.md') || file.name.endsWith('.txt')) {
+        const reader = new FileReader();
+        reader.onload = ev => {
+          const now = Date.now() + Math.random();
+          setNotes(p => [{ id: now, updatedAt: now, date: makeDate(), title: file.name.replace(/\.[^/.]+$/, ''), text: ev.target.result.trim(), pinned: false }, ...p]);
+        };
+        reader.readAsText(file);
+        imported++;
+      }
+    });
+    if (imported > 0 && nav.mode !== 'list') dispatch({ type: 'LIST' });
+  };
+
+  const list = useMemo(() => {
+    let l = [...notes];
+    if (filter === 'pinned') l = l.filter(n => n.pinned);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      l = l.filter(n => (n.title||'').toLowerCase().includes(q) || n.text.toLowerCase().includes(q));
+    }
+    return l.sort((a, b) => (b.pinned - a.pinned) || (b.id - a.id));
+  }, [notes, search, filter]);
+
+  return (
+    <div className="min-h-screen bg-transparent text-zinc-200"
+      onDragOver={handleGlobalDragOver}
+      onDragLeave={handleGlobalDragLeave}
+      onDrop={handleGlobalDrop}
+    >
+      {/* ── Firebase Modal ── */}
+      {showFbModal && (
+        <FirebaseModal
+          onClose={() => setShowFbModal(false)}
+          onConnected={() => window.dispatchEvent(new Event("fb-ready"))}
+        />
+      )}
+
+      {/* ── Toast ── */}
+      {toast && (
+        <div className="fixed bottom-8 left-1/2 z-[300] toast-animate px-5 py-3 bg-zinc-800 border border-zinc-700 rounded-2xl shadow-2xl text-sm font-medium text-zinc-100 font-sans-body pointer-events-none whitespace-nowrap">
+          {toast}
+        </div>
+      )}
+      {isDragging && (
+        <div className="fixed inset-0 z-[100] bg-emerald-900/30 backdrop-blur-sm border-8 border-emerald-500/50 border-dashed flex items-center justify-center pointer-events-none transition-all">
+          <div className="bg-zinc-900 p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-4 border border-emerald-500/30">
+            <svg className="w-16 h-16 text-emerald-400 animate-bounce" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <h2 className="text-3xl font-heading font-bold text-emerald-400">Drop Files Here</h2>
+            <p className="text-zinc-400 font-sans-body">Supports .MD and .TXT files</p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Header ── */}
+      <header className="sticky top-0 z-40 bg-[#09090b]/80 backdrop-blur-xl border-b border-zinc-800/50">
+        <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4 px-6 py-4">
+          <div className="flex items-center justify-between w-full md:w-auto">
+            <div className="cursor-pointer flex items-center gap-4" onClick={() => dispatch({ type: 'LIST' })}>
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-lg shadow-emerald-500/20 flex items-center justify-center">
+                <span className="text-zinc-950 font-bold font-heading text-lg">V</span>
+              </div>
+              <h1 className="text-xl font-semibold text-zinc-100 font-heading tracking-tight">Vault</h1>
+            </div>
+            {nav.mode === 'list' && (
+              <div className="md:hidden flex items-center gap-2">
+                <button onClick={handleBackup} title="Backup"
+                  className="w-8 h-8 flex items-center justify-center bg-zinc-800 text-zinc-300 rounded-full shadow-md border border-zinc-700/50">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                </button>
+                <button onClick={() => backupImportRef.current?.click()} title="Restore Backup"
+                  className="w-8 h-8 flex items-center justify-center bg-zinc-800 text-zinc-300 rounded-full shadow-md border border-zinc-700/50">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                </button>
+                <button onClick={() => fileImportRef.current?.click()} className="w-8 h-8 flex items-center justify-center bg-zinc-800 text-zinc-300 rounded-full shadow-md border border-zinc-700/50">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                </button>
+                <button onClick={() => { dispatch({ type: 'NEW' }); window.scrollTo({top:0,behavior:'smooth'}); }}
+                  className="w-8 h-8 flex items-center justify-center bg-emerald-500 text-zinc-950 rounded-full font-bold shadow-md shadow-emerald-500/20">
+                  +
+                </button>
+              </div>
+            )}
+          </div>
+
+          {nav.mode === 'list' && (
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <input type="file" accept=".md,.txt" ref={fileImportRef} onChange={handleImportFile} className="hidden" />
+              <input type="file" accept=".json" ref={backupImportRef} onChange={handleRestoreBackup} className="hidden" />
+              <div className="relative flex-grow md:w-64 transition-all">
+                <input dir="auto" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search your mind..."
+                  className="w-full smooth-input px-4 py-2 pl-10 text-sm font-sans-body placeholder-zinc-500" />
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                {search && <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 text-xs">✕</button>}
+              </div>
+              <div className="hidden md:flex bg-zinc-900 border border-zinc-800 rounded-xl p-1">
+                <button onClick={() => setFilter('all')} className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-all ${filter==='all' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>All</button>
+                <button onClick={() => setFilter('pinned')} className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-all ${filter==='pinned' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>Pinned</button>
+              </div>
+              <div className="hidden md:flex items-center gap-2">
+                <button onClick={handleBackup}
+                  title="Download a full backup of all your notes and images"
+                  className="flex items-center gap-2 px-4 py-2 text-sm bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white rounded-xl font-medium transition-colors shadow-sm font-sans-body border border-zinc-700/50">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                  Backup
+                </button>
+                <button onClick={() => backupImportRef.current?.click()}
+                  title="Restore notes from a .json backup file"
+                  className="flex items-center gap-2 px-4 py-2 text-sm bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white rounded-xl font-medium transition-colors shadow-sm font-sans-body border border-zinc-700/50">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m0-4l4-4m0 0l4 4m-4-4v12" /></svg>
+                  Restore
+                </button>
+                <button onClick={() => fileImportRef.current?.click()}
+                  className="flex items-center gap-2 px-4 py-2 text-sm bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white rounded-xl font-medium transition-colors shadow-sm font-sans-body border border-zinc-700/50">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                  Import
+                </button>
+                <button onClick={() => dispatch({ type: 'NEW' })}
+                  className="flex items-center gap-2 px-5 py-2 text-sm bg-zinc-100 text-zinc-950 hover:bg-white rounded-xl font-semibold transition-transform hover:scale-105 shadow-md font-sans-body">
+                  New Note
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="hidden md:block">
+            <Dot st={syncSt} onClick={() => setShowFbModal(true)} />
+          </div>
+        </div>
+      </header>
+
+      {/* ── Main ── */}
+      <main className="max-w-6xl mx-auto px-6 py-10 relative z-10">
+        {nav.mode === 'new' && (
+          <Editor
+            onSave={handleSaveNew}
+            onCancel={() => dispatch({ type: 'LIST' })}
+            clearDrag={() => setIsDragging(false)}
+          />
+        )}
+        {nav.mode === 'edit' && activeNote && (
+          <Editor
+            initialTitle={activeNote.title}
+            initialText={activeNote.text}
+            onSave={handleSaveEdit}
+            onCancel={() => dispatch({ type: 'VIEW', id: activeNote.id })}
+            clearDrag={() => setIsDragging(false)}
+          />
+        )}
+        {nav.mode === 'view' && activeNote && (
+          <ViewMode
+            note={activeNote}
+            onEdit={() => dispatch({ type: 'EDIT' })}
+            onClose={() => dispatch({ type: 'LIST' })}
+            onDelete={() => handleDelete(activeNote.id)}
+          />
+        )}
+        {nav.mode === 'list' && (
+          <>
+            <div className="flex items-center justify-between mb-8">
+              <h2 className="text-2xl font-heading font-semibold text-zinc-100">
+                {filter === 'pinned' ? 'Pinned Notes' : 'All Notes'}
+                <span className="text-zinc-500 text-lg ml-3 font-normal">{list.length}</span>
+              </h2>
+              <div className="md:hidden bg-zinc-900 border border-zinc-800 rounded-xl p-1 flex">
+                <button onClick={() => setFilter('all')} className={`px-3 py-1 text-xs font-medium rounded-lg ${filter==='all' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400'}`}>All</button>
+                <button onClick={() => setFilter('pinned')} className={`px-3 py-1 text-xs font-medium rounded-lg ${filter==='pinned' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400'}`}>Pinned</button>
+              </div>
+            </div>
+            {list.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="w-20 h-20 mb-6 rounded-3xl bg-zinc-900 border border-zinc-800 flex items-center justify-center">
+                  <svg className="w-8 h-8 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-semibold text-zinc-300 font-heading">It's quiet here.</h3>
+                <p className="text-zinc-500 mt-2 max-w-sm mx-auto font-sans-body">Capture your thoughts, ideas, and secrets in a beautifully encrypted space.</p>
+                <button onClick={() => dispatch({ type: 'NEW' })} className="mt-6 px-6 py-2.5 bg-emerald-500 text-emerald-950 font-semibold rounded-xl hover:bg-emerald-400 transition-colors">
+                  Write your first note
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
+                {list.map(n => (
+                  <NoteCard
+                    key={n.id}
+                    note={n}
+                    onOpen={id => dispatch({ type: 'VIEW', id })}
+                    onPin={togglePin}
+                    getDisplayTitle={getDisplayTitle}
+                    getPreviewText={getPreviewText}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </main>
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
